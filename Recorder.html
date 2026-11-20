@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Enregistrement audio – Français Nickel</title>
+  <style>
+    :root{font-family:Arial,sans-serif;color:#17243b;background:#f4f7fb}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;display:grid;place-items:center;padding:22px}
+    main{width:min(100%,460px);background:#fff;border-radius:18px;padding:28px;box-shadow:0 8px 30px #17243b18}
+    h1{font-size:1.45rem;margin:0 0 12px;color:#17365d}
+    p{line-height:1.55}
+    button{width:100%;border:0;border-radius:10px;padding:14px 18px;margin-top:12px;background:#e87524;color:#fff;font-size:1rem;font-weight:700;cursor:pointer}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    #status{min-height:3.5em;padding:12px;background:#f1f5fa;border-radius:9px;font-size:.95rem}
+    #timer{font-size:2rem;font-weight:700;text-align:center;margin:18px 0;color:#17365d}
+    audio{width:100%;margin-top:16px}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Ton défi oral – 45 secondes</h1>
+    <p>Pour commencer, autorise l’accès au microphone lorsque ton navigateur te le demande. Ton enregistrement sera renvoyé directement au Calendrier Nickel et ne sera pas envoyé sur un serveur.</p>
+    <button id="enable" type="button">Activer le microphone</button>
+    <button id="start" type="button" disabled>Commencer l’enregistrement</button>
+    <button id="stop" type="button" disabled>Terminer maintenant</button>
+    <div id="timer" aria-live="off">00:45</div>
+    <p id="status" role="status" aria-live="polite">Clique sur « Activer le microphone » pour autoriser l’accès.</p>
+    <div id="preview"></div>
+  </main>
+<script>
+(()=>{
+  const params=new URLSearchParams(location.search);
+  const session=params.get('session');
+  const enable=document.getElementById('enable');
+  const start=document.getElementById('start');
+  const stop=document.getElementById('stop');
+  const timerDisplay=document.getElementById('timer');
+  const status=document.getElementById('status');
+  const preview=document.getElementById('preview');
+  let stream=null,mediaRecorder=null,chunks=[],timeout=null,remaining=45,previewUrl=null;
+
+  function send(type,payload={}){
+    if(window.opener&&!window.opener.closed){
+      window.opener.postMessage({type,session,...payload},'*');
+    }
+  }
+  function showTime(seconds){
+    timerDisplay.textContent=`00:${String(seconds).padStart(2,'0')}`;
+  }
+  function stopTracks(){
+    if(stream){stream.getTracks().forEach(track=>track.stop());stream=null;}
+  }
+  function finish(){
+    if(mediaRecorder&&mediaRecorder.state!=='inactive')mediaRecorder.stop();
+  }
+
+  enable.addEventListener('click',async()=>{
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+      status.textContent='Ce navigateur ou cette page ne permet pas l’accès au microphone. Ouvre cette page directement en HTTPS dans un navigateur récent.';
+      send('nickel-recorder-error',{message:status.textContent});
+      return;
+    }
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      enable.disabled=true;
+      start.disabled=false;
+      status.textContent='Microphone activé. Tu peux commencer quand tu es prêt(e).';
+    }catch(error){
+      const message=error&&error.name==='NotAllowedError'
+        ?'Accès au microphone refusé. Autorise le microphone pour ce site dans les paramètres du navigateur, puis recharge cette page.'
+        :'Impossible d’activer le microphone. Vérifie qu’il est connecté et qu’aucune autre application ne le bloque.';
+      status.textContent=message;
+      send('nickel-recorder-error',{message});
+    }
+  });
+
+  start.addEventListener('click',()=>{
+    if(!stream)return;
+    if(!window.MediaRecorder){
+      status.textContent='La fonction d’enregistrement n’est pas prise en charge par ce navigateur.';
+      send('nickel-recorder-error',{message:status.textContent});
+      return;
+    }
+    try{
+      chunks=[];
+      remaining=45;
+      showTime(remaining);
+      mediaRecorder=new MediaRecorder(stream);
+      mediaRecorder.addEventListener('dataavailable',event=>{
+        if(event.data&&event.data.size)chunks.push(event.data);
+      });
+      mediaRecorder.addEventListener('stop',()=>{
+        clearInterval(timeout);
+        stopTracks();
+        start.disabled=true;
+        stop.disabled=true;
+        const blob=new Blob(chunks,{type:mediaRecorder.mimeType||'audio/webm'});
+        if(!blob.size){
+          status.textContent='Aucun son n’a été enregistré. Ferme cette fenêtre et réessaie.';
+          send('nickel-recorder-error',{message:status.textContent});
+          return;
+        }
+        if(previewUrl)URL.revokeObjectURL(previewUrl);
+        previewUrl=URL.createObjectURL(blob);
+        const audio=document.createElement('audio');
+        audio.controls=true;
+        audio.src=previewUrl;
+        preview.replaceChildren(audio);
+        status.textContent='Enregistrement terminé. Tu peux le réécouter. Retourne au Calendrier Nickel pour retrouver ton audio.';
+        send('nickel-recorder-complete',{audio:blob});
+      },{once:true});
+      mediaRecorder.start();
+      start.disabled=true;
+      stop.disabled=false;
+      enable.disabled=true;
+      status.textContent='Enregistrement en cours… Parle en français pendant 45 secondes.';
+      timeout=setInterval(()=>{
+        remaining--;
+        showTime(Math.max(0,remaining));
+        if(remaining<=0)finish();
+      },1000);
+    }catch(error){
+      status.textContent='Impossible de démarrer l’enregistrement. Réessaie.';
+      send('nickel-recorder-error',{message:status.textContent});
+    }
+  });
+
+  stop.addEventListener('click',finish);
+  window.addEventListener('beforeunload',()=>{
+    clearInterval(timeout);
+    stopTracks();
+    if(previewUrl)URL.revokeObjectURL(previewUrl);
+  });
+  if(!session||!window.opener){
+    status.textContent='Cette page doit être ouverte depuis le bouton d’enregistrement du Calendrier Nickel.';
+    enable.disabled=true;
+  }
+})();
+</script>
+</body>
+</html>
